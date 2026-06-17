@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Claude Sessions</title>
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'&gt;&lt;rect x='8' y='8' width='16' height='16' rx='3' transform='rotate(45 16 16)' fill='%234f46e5'/&gt;&lt;/svg&gt;" />
+<style>
+  /* ── Archive-index palette. Warm paper, ink text, one indigo accent. ───── */
+  :root {
+    --paper:       oklch(0.985 0.006 75);   /* content surface  */
+    --rail:        oklch(0.955 0.007 75);   /* left nav, darker warm neutral */
+    --raised:      oklch(0.992 0.005 75);   /* hover / drawer */
+    --ink:         oklch(0.27 0.012 75);    /* primary text (warm near-black) */
+    --muted:       oklch(0.50 0.012 75);    /* secondary text */
+    --faint:       oklch(0.64 0.010 75);    /* tertiary / metadata */
+    --line:        oklch(0.905 0.008 75);   /* hairlines */
+    --line-strong: oklch(0.86 0.010 75);
+    --accent:      oklch(0.52 0.16 268);    /* indigo: selection, primary, current match */
+    --accent-soft: oklch(0.955 0.03 268);   /* selected-row tint */
+    --accent-ink:  oklch(0.46 0.17 268);
+    --green:       oklch(0.50 0.085 150);   /* git branch */
+    --mark:        oklch(0.90 0.135 95);    /* search highlight (archival highlighter) */
+    --term-bg:     oklch(0.26 0.013 268);   /* resume command chip (ink, slight indigo) */
+    --term-fg:     oklch(0.93 0.02 95);
+    --shadow:      0 1px 2px oklch(0.27 0.01 75 / 0.06), 0 8px 30px oklch(0.27 0.01 75 / 0.10);
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--paper); color: var(--ink); font-family: var(--sans);
+    font-size: 13.5px; line-height: 1.5; height: 100vh; overflow: hidden;
+    display: flex; flex-direction: column; -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  ::selection { background: var(--accent-soft); }
+
+  /* ── Top bar ──────────────────────────────────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 0 18px; height: 52px;
+    border-bottom: 1px solid var(--line); background: var(--paper); flex-shrink: 0;
+  }
+  .brand { font-weight: 650; font-size: 13px; letter-spacing: 0.2px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+  .brand .mark { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); transform: rotate(45deg); }
+  .brand small { color: var(--faint); font-weight: 450; }
+
+  .search-zone { flex: 1; display: flex; align-items: center; gap: 10px; max-width: 760px; }
+  .modes { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; flex-shrink: 0; }
+  .modes button { border: 0; background: transparent; color: var(--muted); padding: 6px 11px; font-size: 12px; font-weight: 550; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: var(--paper); }
+  .search-field { position: relative; flex: 1; }
+  .search-field svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  #search {
+    width: 100%; height: 34px; padding: 0 64px 0 33px; border: 1px solid var(--line-strong); border-radius: 7px;
+    background: var(--raised); color: var(--ink); font-size: 13px; outline: none; font-family: inherit;
+  }
+  #search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .search-field kbd {
+    position: absolute; right: 9px; top: 50%; transform: translateY(-50%); font-family: var(--mono);
+    font-size: 10.5px; color: var(--faint); border: 1px solid var(--line-strong); border-radius: 4px; padding: 1px 5px; background: var(--paper);
+  }
+  .ghost-btn { border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); height: 34px; padding: 0 12px; border-radius: 7px; font-size: 12.5px; flex-shrink: 0; }
+  .ghost-btn:hover { color: var(--ink); border-color: var(--faint); }
+
+  /* ── Shell ────────────────────────────────────────────────────────────── */
+  main { flex: 1; display: flex; min-height: 0; }
+  #rail { width: 268px; flex-shrink: 0; background: var(--rail); border-right: 1px solid var(--line); overflow-y: auto; overflow-x: hidden; padding: 8px 0; }
+  .rail-head { padding: 10px 16px 6px; font-size: 10.5px; letter-spacing: 0.7px; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+  .repo { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 14px; border-radius: 0; color: var(--ink); position: relative; }
+  .repo:hover { background: oklch(0.93 0.008 75); }
+  .repo[aria-current="true"] { background: var(--accent-soft); }
+  .repo[aria-current="true"] .repo-name { color: var(--accent-ink); }
+  .repo.viewing .repo-name::after { content: "•"; color: var(--accent); margin-left: 7px; font-size: 15px; line-height: 0; vertical-align: middle; }
+  .repo-top { display: flex; align-items: baseline; gap: 8px; }
+  .repo-name { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-count { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .repo-path { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .repo-path b { color: var(--accent-ink); font-weight: 600; }
+  .rail-sep { height: 1px; background: var(--line); margin: 8px 14px; }
+
+  /* ── Session ledger ───────────────────────────────────────────────────── */
+  #content { flex: 1; overflow-y: auto; }
+  .group-head {
+    position: sticky; top: 0; z-index: 2; background: var(--paper); border-bottom: 1px solid var(--line);
+    padding: 10px 22px 9px; display: flex; align-items: baseline; gap: 10px;
+  }
+  .group-head h2 { margin: 0; font-size: 13px; font-weight: 650; }
+  .group-head .gpath { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .group-head .gcount { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+
+  /* ── Single-repo overview ─────────────────────────────────────────────── */
+  .repo-overview { position: sticky; top: 0; z-index: 3; background: var(--paper); padding: 20px 22px 12px; border-bottom: 1px solid var(--line); }
+  .ro-top { display: flex; align-items: center; gap: 12px; }
+  .ro-top h2 { margin: 0; font-size: 19px; font-weight: 680; letter-spacing: -0.01em; }
+  .dup-note { font-size: 11px; color: var(--accent-ink); background: var(--accent-soft); padding: 2px 9px; border-radius: 999px; font-weight: 600; }
+  .ro-path { display: inline-flex; align-items: center; gap: 8px; margin-top: 7px; border: 0; background: none; padding: 2px 0; font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: pointer; max-width: 100%; }
+  .ro-path span.p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ro-path:hover { color: var(--ink); }
+  .ro-path .copy-ic { color: var(--faint); font-size: 12px; flex-shrink: 0; }
+  .ro-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .ro-stats { font-family: var(--mono); font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .ro-metarow { display: flex; align-items: center; gap: 12px; margin-top: 7px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 6px; }
+  .chip-btn { border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); border-radius: 999px; padding: 4px 11px; font-size: 12px; font-family: var(--mono); display: inline-flex; align-items: center; gap: 6px; }
+  .chip-btn:hover { color: var(--ink); border-color: var(--faint); }
+  .chip-btn.on { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+  .chip-btn .cn { font-size: 10.5px; opacity: 0.65; }
+  .chip-btn.on .cn { opacity: 0.85; }
+  .chip-btn .dim { opacity: 0.7; font-style: italic; }
+  .chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip-btn.more { border-style: dashed; color: var(--accent-ink); }
+  .bucket-head { position: sticky; top: var(--ovh, 0px); z-index: 2; background: var(--paper); padding: 13px 22px 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; color: var(--faint); display: flex; gap: 8px; align-items: baseline; border-bottom: 1px solid var(--line); }
+  .bucket-head span { font-family: var(--mono); font-weight: 400; opacity: 0.7; }
+
+  .row {
+    position: relative;
+    display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 16px;
+    padding: 9px 22px; border-bottom: 1px solid var(--line); cursor: pointer; scroll-margin: 56px;
+  }
+  .row:hover { background: var(--raised); }
+  .row[data-sel="true"] { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .row-main { min-width: 0; }
+  .row.removing { opacity: 0; transform: translateX(8px); transition: opacity .16s ease, transform .16s ease; }
+
+  /* Per-row quick actions, revealed on hover or when keyboard-selected. */
+  .row-actions { position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+    display: flex; gap: 2px; padding-left: 24px; opacity: 0; pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--raised) 24px); }
+  .row:hover .row-actions, .row[data-sel="true"] .row-actions { opacity: 1; pointer-events: auto; }
+  .row-actions button { border: 1px solid var(--line-strong); background: var(--paper); color: var(--muted);
+    width: 28px; height: 26px; border-radius: 6px; font-size: 13px; display: grid; place-items: center; }
+  .row-actions button:hover { color: var(--ink); border-color: var(--faint); }
+  .row-actions button.danger:hover { color: oklch(0.52 0.18 25); border-color: oklch(0.62 0.14 25); background: oklch(0.96 0.03 25); }
+  .row-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .rename-input { width: 100%; font-size: 13.5px; font-weight: 550; color: var(--ink); font-family: inherit;
+    border: 1px solid var(--accent); border-radius: 5px; padding: 2px 6px; background: var(--paper); outline: none; }
+  .rename-input:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+  .row-title .renamed { color: var(--accent-ink); margin-left: 6px; font-size: 10px; vertical-align: middle; opacity: 0.7; }
+
+  /* Sort control in the repo header. */
+  .sortbar { display: inline-flex; gap: 2px; border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; margin-left: auto; }
+  .sortbar button { border: 0; background: transparent; color: var(--muted); font-size: 11.5px; padding: 4px 10px; font-family: var(--mono); }
+  .sortbar button.on { background: var(--accent); color: var(--paper); }
+  .sortbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  /* Undo toast. */
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px); z-index: 60;
+    display: flex; align-items: center; gap: 14px; background: var(--term-bg); color: oklch(0.95 0.01 75);
+    padding: 11px 16px; border-radius: 9px; box-shadow: var(--shadow); font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .18s ease, transform .22s cubic-bezier(0.22,1,0.36,1); max-width: 80vw; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  #toast .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #toast button { border: 0; background: none; color: oklch(0.8 0.12 268); font-weight: 650; font-size: 13px; padding: 2px 4px; flex-shrink: 0; }
+  #toast button:hover { color: oklch(0.88 0.13 268); }
+  .row-title { font-size: 13.5px; font-weight: 550; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-title .num { color: var(--faint); font-family: var(--mono); font-size: 11px; margin-right: 8px; }
+  .row-snips { margin-top: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .row-snips div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 0; }
+  mark { background: var(--mark); color: var(--ink); border-radius: 2px; padding: 0 1px; }
+
+  .meta { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+  .meta .time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meta .branch { color: var(--green); }
+  .meta .branch::before { content: "⎇ "; }
+  .meta .matches { color: var(--accent-ink); font-weight: 600; }
+  .meta .sid { color: var(--faint); opacity: 0.8; }
+  .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--line-strong); }
+
+  /* ── States ───────────────────────────────────────────────────────────── */
+  .empty { max-width: 460px; margin: 14vh auto 0; text-align: center; color: var(--muted); padding: 0 24px; }
+  .empty h3 { color: var(--ink); font-size: 15px; margin: 0 0 8px; }
+  .empty code { font-family: var(--mono); background: var(--rail); padding: 1px 6px; border-radius: 4px; font-size: 12px; color: var(--accent-ink); }
+  .empty .modes-tip { margin-top: 14px; font-size: 12.5px; }
+  .skel-row { display: grid; grid-template-columns: 1fr auto; gap: 16px; padding: 11px 22px; border-bottom: 1px solid var(--line); }
+  .skel { height: 11px; border-radius: 4px; background: linear-gradient(90deg, var(--line) 25%, var(--raised) 37%, var(--line) 63%); background-size: 400% 100%; animation: shimmer 1.3s ease-in-out infinite; }
+  @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+  /* ── Transcript drawer ────────────────────────────────────────────────── */
+  .scrim { position: fixed; inset: 0; background: oklch(0.27 0.01 75 / 0.28); opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 40; }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+  #drawer {
+    position: fixed; top: 0; right: 0; height: 100vh; width: clamp(520px, 58vw, 940px); background: var(--paper);
+    border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); z-index: 50;
+    transform: translateX(100%); transition: transform .22s cubic-bezier(0.22, 1, 0.36, 1);
+    display: flex; flex-direction: column;
+  }
+  #drawer.open { transform: translateX(0); }
+  .drawer-head { padding: 16px 20px 14px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .drawer-head .dtitle { font-size: 15px; font-weight: 650; line-height: 1.35; margin-bottom: 8px; padding-right: 28px; }
+  .drawer-head .dmeta { font-family: var(--mono); font-size: 11.5px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 8px 12px; }
+  .drawer-head .dmeta .branch { color: var(--green); }
+  .dactions { display: flex; gap: 8px; margin-top: 11px; }
+  .dactions button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); border-radius: 7px; padding: 5px 11px; font-size: 12px; }
+  .dactions button svg { width: 13px; height: 13px; }
+  .dactions button:hover { color: var(--ink); border-color: var(--faint); }
+  .dactions button.danger:hover { color: oklch(0.52 0.18 25); border-color: oklch(0.62 0.14 25); background: oklch(0.96 0.03 25); }
+  .dactions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .resume {
+    margin-top: 13px; display: flex; align-items: stretch; border-radius: 8px; overflow: hidden;
+    background: var(--term-bg); font-family: var(--mono); font-size: 12px;
+  }
+  .resume code { color: var(--term-fg); padding: 11px 13px; overflow-x: auto; white-space: nowrap; flex: 1; }
+  .resume code .prompt { color: oklch(0.72 0.12 268); user-select: none; }
+  .resume button { border: 0; background: oklch(0.32 0.02 268); color: var(--term-fg); padding: 0 15px; font-size: 12px; font-weight: 600; border-left: 1px solid oklch(0.40 0.03 268); }
+  .resume button:hover { background: oklch(0.38 0.04 268); }
+  .resume button.done { color: oklch(0.82 0.12 150); }
+  .drawer-close { position: absolute; top: 13px; right: 15px; border: 0; background: transparent; color: var(--faint); font-size: 20px; line-height: 1; padding: 4px; }
+  .drawer-close:hover { color: var(--ink); }
+  .drawer-body { overflow-y: auto; padding: 14px 20px 40px; flex: 1; }
+  .drawer-body:focus { outline: none; }
+
+  /* Find-in-transcript bar — shown only when opened from a search hit. */
+  .findbar { margin-top: 11px; display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .findbar .flabel { color: var(--muted); }
+  .findbar .flabel b { color: var(--accent-ink); font-weight: 600; }
+  .findbar .fnav { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--raised); overflow: hidden; }
+  .findbar .fnav .fcount { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 0 8px; min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; }
+  .findbar .fnav button { border: 0; background: transparent; color: var(--muted); width: 28px; height: 26px; font-size: 15px; line-height: 1; }
+  .findbar .fnav button:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-ink); }
+  .findbar .fnav button:disabled { color: var(--line-strong); cursor: default; }
+  .findbar .fnav button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .findbar.none .flabel { color: var(--faint); }
+  /* Match highlights inside the transcript. Active match is stronger. */
+  mark.hit { background: var(--mark); color: var(--ink); border-radius: 2px; padding: 0 1px; scroll-margin: 24px; }
+  mark.hit.active { background: var(--accent); color: var(--paper); }
+
+  /* ── Conversation reader ─────────────────────────────────────────────── */
+  .convo { max-width: 760px; margin: 0 auto; }
+  .sys-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); padding: 4px 0 14px; }
+  .sys-toggle button { border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); border-radius: 999px; padding: 3px 11px; font-size: 11.5px; }
+  .sys-toggle button:hover { color: var(--ink); border-color: var(--faint); }
+  .sys-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* A turn: gutter label on the left, content on the right. */
+  .turn { display: grid; grid-template-columns: 64px 1fr; gap: 16px; padding: 14px 0; }
+  .turn + .turn { border-top: 1px solid var(--line); }
+  .turn .gutter { font-size: 11px; font-weight: 650; padding-top: 1px; }
+  .turn .gutter .t { display: block; font-family: var(--mono); font-size: 10px; font-weight: 400; color: var(--faint); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .turn.user .gutter { color: var(--accent-ink); }
+  .turn.assistant .gutter { color: var(--muted); }
+  .turn .prose { max-width: 72ch; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; color: var(--ink); text-wrap: pretty; }
+  .turn.assistant .prose { color: oklch(0.32 0.012 75); }
+
+  /* Slim command chip — a slash command invocation, not a real turn. */
+  .cmdline { display: flex; align-items: center; gap: 8px; padding: 7px 0; color: var(--muted); font-size: 12px; }
+  .cmdline .cmd { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); background: var(--accent-soft); padding: 1px 9px; border-radius: 999px; }
+  .cmdline .ts { font-family: var(--mono); font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  /* System / plumbing output: hidden by default; a match reveals its own. */
+  .drawer-body.hide-system .sysmsg { display: none; }
+  .drawer-body.hide-system .sysmsg.revealed { display: block; }
+  .sysmsg { padding: 7px 0 7px 80px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+  .sysmsg .stag { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--faint); margin-right: 7px; }
+
+  /* Collapsed tool calls. */
+  .tools { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .tool-name { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .tool-name b { color: var(--accent-ink); font-weight: 600; }
+  details.tool { border: 1px solid var(--line); border-radius: 7px; background: var(--rail); overflow: hidden; }
+  details.tool > summary { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 5px 10px; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px; }
+  details.tool > summary::-webkit-details-marker { display: none; }
+  details.tool > summary::before { content: "▸"; color: var(--faint); transition: transform .15s ease; }
+  details.tool[open] > summary::before { transform: rotate(90deg); }
+  details.tool > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  details.tool .tool-body { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; padding: 0 12px 9px 26px; max-height: 320px; overflow: auto; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="mark"></span>Claude Sessions <small id="brandCount"></small></div>
+  <div class="search-zone">
+    <div class="modes" role="group" aria-label="Search mode">
+      <button id="mTitle" aria-pressed="true">Titles</button>
+      <button id="mFull" aria-pressed="false">Full text</button>
+    </div>
+    <div class="search-field">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="search" autocomplete="off" spellcheck="false" placeholder="Filter by title, repo, or branch" />
+      <kbd>/</kbd>
+    </div>
+  </div>
+  <button class="ghost-btn" id="refresh" title="Rescan folder">Rescan</button>
+</header>
+<main>
+  <nav id="rail" aria-label="Repositories"></nav>
+  <section id="content" aria-live="polite"></section>
+</main>
+
+<div id="toast"><span class="msg"></span><button id="toastAction"></button></div>
+<div class="scrim" id="scrim"></div>
+<aside id="drawer" aria-label="Transcript" aria-hidden="true">
+  <button class="drawer-close" id="drawerClose" aria-label="Close">×</button>
+  <div class="drawer-head" id="drawerHead"></div>
+  <div class="drawer-body" id="drawerBody" tabindex="-1"></div>
+</aside>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+const state = {
+  scanDir: "",
+  projects: [],
+  byDir: new Map(),
+  activeRepo: null,       // dirName | null (all)
+  branchFilter: null,     // branch name within the active repo, or null
+  showAllBranches: false, // expand the branch chip row past the cap
+  mode: "title",          // title | full
+  query: "",
+  searchResults: null,    // {query, results} for full-text
+  rows: [],               // flat list of currently-rendered selectable rows
+  selIndex: -1,
+  sort: "recent",         // recent | size | messages (single-repo view)
+};
+
+const IC = {
+  copy: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+  edit: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`,
+  trash: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/></svg>`,
+  check: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
+};
+
+/* ── helpers ───────────────────────────────────────────────────────────── */
+function sessionTitle(s) { return (s && (s.customTitle || s.title)) || "(untitled)"; }
+function resumeCmd(cwd, id) { return (cwd ? `cd "${cwd}" && ` : "") + `claude --resume ${id}`; }
+function findSession(dirName, id) { const p = state.byDir.get(dirName); return p ? p.sessions.find((s) => s.id === id) : null; }
+function timeAgo(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  if (s < 604800) return Math.floor(s / 86400) + "d";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function fmtBytes(b) {
+  if (!b) return "";
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + "MB";
+  if (b >= 1e3) return Math.round(b / 1e3) + "KB";
+  return b + "B";
+}
+function shortModel(m) { return (m || "").replace(/^claude-/, "").replace(/-\d{8}$/, ""); }
+function highlight(text, q) {
+  const safe = esc(text);
+  if (!q) return safe;
+  return safe.replace(new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig"), "<mark>$1</mark>");
+}
+
+/* Distinguishing path tail for repos that share a label (duplicate checkouts). */
+function computeDupTails() {
+  const byLabel = new Map();
+  for (const p of state.projects) {
+    if (!byLabel.has(p.label)) byLabel.set(p.label, []);
+    byLabel.get(p.label).push(p);
+  }
+  for (const group of byLabel.values()) {
+    if (group.length < 2) { for (const p of group) p._dup = null; continue; }
+    for (const p of group) {
+      const segs = p.path.split(/[\\/]/).filter(Boolean);
+      p._dup = segs.slice(-2).join("/"); // last two segments distinguish duplicates
+    }
+  }
+}
+
+/* ── load ──────────────────────────────────────────────────────────────── */
+async function load() {
+  renderSkeleton();
+  const r = await fetch("/api/projects");
+  const d = await r.json();
+  if (d.error) { $("#content").innerHTML = errorState(d.error); $("#rail").innerHTML = ""; return; }
+  state.scanDir = d.dir || "";
+  state.projects = d.projects || [];
+  state.byDir = new Map(state.projects.map((p) => [p.dirName, p]));
+  computeDupTails();
+  renderRail();
+  render();
+}
+
+/* ── left rail ─────────────────────────────────────────────────────────── */
+function renderRail() {
+  const total = state.projects.reduce((n, p) => n + p.sessionCount, 0);
+  $("#brandCount").textContent = `· ${state.projects.length} repos · ${total} sessions`;
+  let h = `<div class="rail-head">Repositories</div>`;
+  h += repoButton({ dirName: "__all", label: "All repos", count: total, path: state.scanDir, last: null, all: true });
+  h += `<div class="rail-sep"></div>`;
+  for (const p of state.projects) {
+    h += repoButton({ dirName: p.dirName, label: p.label, count: p.sessionCount, path: p.path, dup: p._dup, last: p.lastActivity });
+  }
+  const rail = $("#rail");
+  rail.innerHTML = h;
+  rail.querySelectorAll(".repo").forEach((el) => {
+    el.onclick = () => {
+      state.activeRepo = el.dataset.repo === "__all" ? null : el.dataset.repo;
+      state.branchFilter = null;
+      state.showAllBranches = false;
+      renderRail(); render();
+    };
+  });
+}
+function repoButton({ dirName, label, count, path, dup, last, all }) {
+  const active = (state.activeRepo === null && all) || state.activeRepo === dirName;
+  let pathLine;
+  if (all) pathLine = esc(path);
+  else if (dup) pathLine = `…/<b>${esc(dup)}</b>`;
+  else pathLine = esc(path);
+  return `<button class="repo" data-repo="${esc(dirName)}" aria-current="${active}">
+    <span class="repo-top"><span class="repo-name">${esc(label)}</span><span class="repo-count">${count}</span></span>
+    <span class="repo-path" dir="ltr">${pathLine}</span>
+  </button>`;
+}
+
+/* ── main content ──────────────────────────────────────────────────────── */
+function renderSkeleton() {
+  let h = "";
+  for (let i = 0; i < 9; i++) {
+    h += `<div class="skel-row"><div class="skel" style="width:${40 + (i * 37) % 45}%"></div><div class="skel" style="width:90px"></div></div>`;
+  }
+  $("#content").innerHTML = h;
+}
+function errorState(msg) {
+  return `<div class="empty"><h3>Can't read that folder</h3><p>${esc(msg)}</p><p class="modes-tip">Point the server at your projects dir: <code>node server.js --dir &lt;path&gt;</code></p></div>`;
+}
+
+function render() {
+  state.rows = [];
+  state.selIndex = -1;
+  if (state.mode === "full") return renderFull();
+  return renderBrowse();
+}
+
+function metaCluster(s, opts = {}) {
+  const bits = [];
+  bits.push(`<span class="time">${timeAgo(s.lastTs)}</span>`);
+  if (opts.matches) bits.push(`<span class="matches">${opts.matches}×</span>`);
+  if (s.gitBranch) bits.push(`<span class="branch">${esc(s.gitBranch)}</span>`);
+  bits.push(`<span>${s.userMessages || 0} msg</span>`);
+  if (s.bytes) bits.push(`<span>${fmtBytes(s.bytes)}</span>`);
+  if (s.model) bits.push(`<span>${esc(shortModel(s.model))}</span>`);
+  bits.push(`<span class="sid">${esc((s.id || "").slice(0, 6))}</span>`);
+  return `<div class="meta">${bits.join('<span class="dot"></span>')}</div>`;
+}
+
+function rowActions() {
+  return `<div class="row-actions">
+    <button class="act act-copy" title="Copy resume command" aria-label="Copy resume command">${IC.copy}</button>
+    <button class="act act-rename" title="Rename" aria-label="Rename">${IC.edit}</button>
+    <button class="act act-del danger" title="Delete" aria-label="Delete">${IC.trash}</button>
+  </div>`;
+}
+function rowHtml(s, dirName, idx, opts = {}) {
+  const snips = opts.snippets
+    ? `<div class="row-snips">${opts.snippets.map((sn) => `<div>${highlight("…" + sn.trim() + "…", state.query)}</div>`).join("")}</div>`
+    : "";
+  const t = sessionTitle(s);
+  const title = (state.mode === "title" ? highlight(t, state.query) : esc(t)) + (s.customTitle ? ` <span class="renamed" title="renamed">${IC.edit}</span>` : "");
+  return `<div class="row" role="button" tabindex="-1" data-idx="${idx}" data-dir="${esc(dirName)}" data-id="${esc(s.id)}" data-cwd="${esc(opts.cwd || "")}">
+    <div class="row-main"><div class="row-title">${title}</div>${snips}</div>
+    ${metaCluster(s, opts)}
+    ${rowActions()}
+  </div>`;
+}
+
+const BUCKETS = ["Today", "Yesterday", "This week", "This month", "Earlier"];
+function timeBucket(iso) {
+  const d = new Date(iso); if (isNaN(d.getTime())) return 4;
+  const now = new Date(), day = 86400000;
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t = d.getTime();
+  if (t >= startToday) return 0;
+  if (t >= startToday - day) return 1;
+  if (t >= startToday - 7 * day) return 2;
+  if (t >= startToday - 30 * day) return 3;
+  return 4;
+}
+function fmtDateShort(iso) {
+  const d = new Date(iso); if (isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function renderBrowse() {
+  const q = state.query.toLowerCase();
+  let html = "";
+  if (state.activeRepo) {
+    const p = state.byDir.get(state.activeRepo);
+    html = p ? renderRepoView(p, q) : "";
+  } else {
+    let idx = 0;
+    for (const p of state.projects) {
+      let sessions = p.sessions;
+      if (q) {
+        sessions = sessions.filter((s) =>
+          (s.title || "").toLowerCase().includes(q) ||
+          (s.gitBranch || "").toLowerCase().includes(q) ||
+          p.label.toLowerCase().includes(q) ||
+          p.path.toLowerCase().includes(q) ||
+          (s.id || "").includes(q));
+      }
+      if (!sessions.length) continue;
+      html += `<div class="group-head"><h2>${esc(p.label)}</h2><span class="gpath">${esc(p.path)}</span><span class="gcount">${sessions.length} session${sessions.length > 1 ? "s" : ""}</span></div>`;
+      for (const s of sessions) { state.rows.push({ dirName: p.dirName, id: s.id }); html += rowHtml(s, p.dirName, idx++, { cwd: p.path }); }
+    }
+    if (!html) {
+      html = q
+        ? `<div class="empty"><h3>No matching titles</h3><p>Nothing matches “${esc(state.query)}” in titles, repos, or branches. Try <b>Full text</b> to search inside transcripts.</p></div>`
+        : `<div class="empty"><h3>No sessions found</h3><p>Scanned <code>${esc(state.scanDir)}</code> but found no transcripts.</p></div>`;
+    }
+  }
+  $("#content").innerHTML = html;
+  bindRows();
+  bindRepoControls();
+}
+
+function renderRepoView(p, q) {
+  const branchCounts = {};
+  for (const s of p.sessions) { const b = s.gitBranch || "—"; branchCounts[b] = (branchCounts[b] || 0) + 1; }
+  const branches = Object.keys(branchCounts).sort((a, b) => branchCounts[b] - branchCounts[a]);
+  let minT = null, maxT = null;
+  for (const s of p.sessions) {
+    const f = s.firstTs || s.lastTs;
+    if (f && (!minT || new Date(f) < new Date(minT))) minT = f;
+    if (s.lastTs && (!maxT || new Date(s.lastTs) > new Date(maxT))) maxT = s.lastTs;
+  }
+  let sessions = p.sessions;
+  if (state.branchFilter) sessions = sessions.filter((s) => (s.gitBranch || "—") === state.branchFilter);
+  if (q) sessions = sessions.filter((s) =>
+    (s.title || "").toLowerCase().includes(q) || (s.gitBranch || "").toLowerCase().includes(q) || (s.id || "").includes(q));
+
+  const dup = p._dup ? `<span class="dup-note">duplicate checkout</span>` : "";
+  const range = minT ? ` · ${fmtDateShort(minT)} – ${fmtDateShort(maxT)}` : "";
+  const chip = (b, label, count) =>
+    `<button class="chip-btn ${(b === null ? !state.branchFilter : state.branchFilter === b) ? "on" : ""}" data-branch="${b === null ? "" : esc(b)}">${label} <span class="cn">${count}</span></button>`;
+  // Cap the chip row so many-branch repos don't push the list down. Keep the
+  // selected branch visible even when collapsed; "+N more" reveals the rest.
+  const CAP = 6;
+  let shown = branches, moreBtn = "";
+  if (branches.length > CAP && !state.showAllBranches) {
+    shown = branches.slice(0, CAP);
+    if (state.branchFilter && branches.includes(state.branchFilter) && !shown.includes(state.branchFilter)) shown = shown.concat(state.branchFilter);
+    moreBtn = `<button class="chip-btn more" data-more="1">+${branches.length - shown.length} more</button>`;
+  } else if (branches.length > CAP) {
+    moreBtn = `<button class="chip-btn more" data-more="0">show less</button>`;
+  }
+  const sortBtn = (key, label) => `<button class="${state.sort === key ? "on" : ""}" data-sort="${key}">${label}</button>`;
+  let html = `<div class="repo-overview">
+    <div class="ro-top"><h2>${esc(p.label)}</h2>${dup}</div>
+    <button class="ro-path" id="copyPath" data-path="${esc(p.path)}" title="Copy path"><span class="p">${esc(p.path)}</span><span class="copy-ic">⧉</span></button>
+    <div class="ro-metarow">
+      <div class="ro-stats">${p.sessions.length} sessions · ${branches.length} branch${branches.length > 1 ? "es" : ""}${range}</div>
+      <div class="sortbar">${sortBtn("recent", "recent")}${sortBtn("size", "size")}${sortBtn("messages", "messages")}</div>
+    </div>
+    <div class="chips">
+      ${chip(null, "all", p.sessions.length)}
+      ${shown.map((b) => chip(b, b === "—" ? '<span class="dim">no branch</span>' : esc(b), branchCounts[b])).join("")}
+      ${moreBtn}
+    </div>
+  </div>`;
+
+  if (!sessions.length) {
+    html += `<div class="empty"><h3>No sessions${state.branchFilter ? " on this branch" : ""}</h3><p>${q ? "Nothing matches your filter." : "Pick another branch above."}</p></div>`;
+    return html;
+  }
+  let idx = 0;
+  if (state.sort === "recent") {
+    const groups = [[], [], [], [], []];
+    for (const s of sessions) groups[timeBucket(s.lastTs)].push(s);
+    groups.forEach((gs, bi) => {
+      if (!gs.length) return;
+      html += `<div class="bucket-head">${BUCKETS[bi]} <span>${gs.length}</span></div>`;
+      for (const s of gs) { state.rows.push({ dirName: p.dirName, id: s.id }); html += rowHtml(s, p.dirName, idx++, { cwd: p.path }); }
+    });
+  } else {
+    const sorted = sessions.slice().sort(state.sort === "size"
+      ? (a, b) => (b.bytes || 0) - (a.bytes || 0)
+      : (a, b) => (b.userMessages || 0) - (a.userMessages || 0));
+    html += `<div class="bucket-head">By ${state.sort} <span>${sorted.length}</span></div>`;
+    for (const s of sorted) { state.rows.push({ dirName: p.dirName, id: s.id }); html += rowHtml(s, p.dirName, idx++, { cwd: p.path }); }
+  }
+  return html;
+}
+
+function bindRepoControls() {
+  const cp = $("#copyPath");
+  if (cp) cp.onclick = () => {
+    navigator.clipboard.writeText(cp.dataset.path || "");
+    const ic = cp.querySelector(".copy-ic"); if (!ic) return;
+    ic.textContent = "✓"; setTimeout(() => { ic.textContent = "⧉"; }, 1200);
+  };
+  $("#content").querySelectorAll(".chip-btn").forEach((el) => {
+    el.onclick = () => {
+      if (el.dataset.more !== undefined) { state.showAllBranches = el.dataset.more === "1"; }
+      else { state.branchFilter = el.dataset.branch || null; }
+      render();
+    };
+  });
+  $("#content").querySelectorAll(".sortbar button").forEach((el) => {
+    el.onclick = () => { state.sort = el.dataset.sort; render(); };
+  });
+  syncOverviewOffset();
+}
+
+// The sticky repo header has a variable height (chips wrap); measure it so the
+// sticky bucket sub-headers pin directly beneath it instead of underlapping.
+function syncOverviewOffset() {
+  const ov = $("#content .repo-overview");
+  $("#content").style.setProperty("--ovh", ov ? ov.offsetHeight + "px" : "0px");
+}
+window.addEventListener("resize", () => { if (state.activeRepo && state.mode === "title") syncOverviewOffset(); });
+
+function renderFull() {
+  const activeProj = state.activeRepo ? state.byDir.get(state.activeRepo) : null;
+  const scope = activeProj ? ` in <b>${esc(activeProj.label)}</b>` : "";
+  if (!state.query) {
+    $("#content").innerHTML = `<div class="empty"><h3>Search inside ${activeProj ? "this repo's" : "every"} transcript</h3>
+      <p>Type to grep across session content${scope}, not just titles. Useful when you remember <em>what</em> you discussed but not <em>where</em>.</p>
+      <p class="modes-tip">${activeProj ? "Scoped to <code>" + esc(activeProj.path) + "</code>" : "Scanning <code>" + esc(state.scanDir) + "</code>"}</p></div>`;
+    return;
+  }
+  const res = state.searchResults;
+  if (!res) { renderSkeleton(); return; }
+  let rs = res.results || [];
+  if (state.activeRepo) rs = rs.filter((s) => s.dirName === state.activeRepo);
+  if (!rs.length) {
+    $("#content").innerHTML = `<div class="empty"><h3>No transcripts contain that${activeProj ? " here" : ""}</h3><p>Nothing matches “${esc(res.query)}”${scope}.${activeProj ? " Select <b>All repos</b> to search everywhere." : " Check spelling, or try a shorter fragment."}</p></div>`;
+    return;
+  }
+  let html = `<div class="group-head"><h2>Full-text matches${scope}</h2><span class="gcount">${rs.length} session${rs.length > 1 ? "s" : ""} contain “${esc(res.query)}”</span></div>`;
+  let idx = 0;
+  for (const s of rs) {
+    const p = state.byDir.get(s.dirName);
+    state.rows.push({ dirName: s.dirName, id: s.id, mc: s.matchCount });
+    html += `<div class="row" role="button" tabindex="-1" data-idx="${idx}" data-dir="${esc(s.dirName)}" data-id="${esc(s.id)}" data-mc="${s.matchCount || 0}" data-cwd="${esc(p ? p.path : "")}">
+      <div class="row-main">
+        <div class="row-title">${esc(sessionTitle(s))}${s.customTitle ? ` <span class="renamed" title="renamed">${IC.edit}</span>` : ""} ${p ? `<span class="num">${esc(p.label)}</span>` : ""}</div>
+        <div class="row-snips">${(s.snippets || []).map((sn) => `<div>${highlight("…" + sn.trim() + "…", res.query)}</div>`).join("")}</div>
+      </div>
+      ${metaCluster(s, { matches: s.matchCount })}
+      ${rowActions()}
+    </div>`;
+    idx++;
+  }
+  $("#content").innerHTML = html;
+  bindRows();
+}
+
+function bindRows() {
+  const q = state.mode === "full" ? state.query : "";
+  $("#content").querySelectorAll(".row").forEach((el) => {
+    el.onclick = () => { setSel(+el.dataset.idx); openSession(el.dataset.dir, el.dataset.id, q, +el.dataset.mc || 0); };
+    const cp = el.querySelector(".act-copy");
+    if (cp) cp.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(resumeCmd(el.dataset.cwd, el.dataset.id)); flashBtn(cp); };
+    const rn = el.querySelector(".act-rename");
+    if (rn) rn.onclick = (e) => { e.stopPropagation(); startRowRename(el); };
+    const dl = el.querySelector(".act-del");
+    if (dl) dl.onclick = (e) => { e.stopPropagation(); deleteSessionUI(el.dataset.dir, el.dataset.id); };
+  });
+}
+function flashBtn(btn) { const old = btn.innerHTML; btn.innerHTML = IC.check; setTimeout(() => { btn.innerHTML = old; }, 1100); }
+
+/* ── delete + undo ─────────────────────────────────────────────────────── */
+function removeSessionFromState(dirName, id) {
+  const p = state.byDir.get(dirName);
+  if (p) { p.sessions = p.sessions.filter((s) => s.id !== id); p.sessionCount = p.sessions.length; }
+  if (state.searchResults) state.searchResults.results = state.searchResults.results.filter((s) => !(s.dirName === dirName && s.id === id));
+}
+async function deleteSessionUI(dirName, id) {
+  const s = findSession(dirName, id);
+  const title = s ? sessionTitle(s) : "session";
+  const r = await fetch(`/api/delete?project=${encodeURIComponent(dirName)}&id=${encodeURIComponent(id)}`, { method: "POST" });
+  const d = await r.json();
+  if (d.error) { showToast("Couldn't delete: " + d.error); return; }
+  if (drawerOpen()) closeDrawer();
+  removeSessionFromState(dirName, id);
+  renderRail(); render();
+  showToast(`Deleted “${title.length > 44 ? title.slice(0, 44) + "…" : title}”`, "Undo", () => undoDelete(dirName, id));
+}
+async function undoDelete(dirName, id) {
+  hideToast();
+  await fetch(`/api/restore?project=${encodeURIComponent(dirName)}&id=${encodeURIComponent(id)}`, { method: "POST" });
+  await load();
+}
+
+/* ── rename ────────────────────────────────────────────────────────────── */
+function startRowRename(rowEl) {
+  const s = findSession(rowEl.dataset.dir, rowEl.dataset.id);
+  const titleEl = rowEl.querySelector(".row-title");
+  const cur = s ? sessionTitle(s) : (titleEl.textContent || "").trim();
+  titleEl.innerHTML = `<input class="rename-input" />`;
+  const inp = titleEl.querySelector(".rename-input");
+  inp.value = cur; inp.focus(); inp.select();
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return; settled = true;
+    if (save) await saveRename(rowEl.dataset.id, inp.value);
+    render();
+  };
+  inp.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  inp.onclick = (e) => e.stopPropagation();
+  inp.onblur = () => finish(true);
+}
+async function saveRename(id, title) {
+  const t = (title || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  await fetch(`/api/annotate?id=${encodeURIComponent(id)}&title=${encodeURIComponent(t)}`, { method: "POST" });
+  for (const p of state.projects) { const s = p.sessions.find((x) => x.id === id); if (s) s.customTitle = t; }
+  if (state.searchResults) for (const s of state.searchResults.results) if (s.id === id) s.customTitle = t;
+}
+
+/* ── toast ─────────────────────────────────────────────────────────────── */
+let toastTimer = null;
+function showToast(msg, actionLabel, actionFn) {
+  const t = $("#toast"), a = $("#toastAction");
+  t.querySelector(".msg").textContent = msg;
+  if (actionLabel) { a.textContent = actionLabel; a.style.display = ""; a.onclick = () => { hideToast(); actionFn && actionFn(); }; }
+  else { a.style.display = "none"; }
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 6500);
+}
+function hideToast() { $("#toast").classList.remove("show"); clearTimeout(toastTimer); }
+function setSel(i) {
+  const rows = $("#content").querySelectorAll(".row");
+  if (state.selIndex >= 0 && rows[state.selIndex]) rows[state.selIndex].dataset.sel = "false";
+  state.selIndex = i;
+  if (i >= 0 && rows[i]) { rows[i].dataset.sel = "true"; rows[i].scrollIntoView({ block: "nearest" }); }
+}
+function moveSel(delta) {
+  if (!state.rows.length) return;
+  let i = state.selIndex + delta;
+  i = Math.max(0, Math.min(state.rows.length - 1, i));
+  setSel(i);
+}
+
+/* ── transcript drawer ─────────────────────────────────────────────────── */
+let lastFocus = null;
+let find = { hits: [], idx: -1 };
+let drawerSession = null;
+function startDrawerRename(m) {
+  const el = $("#dtitle");
+  if (!el) return;
+  const cur = sessionTitle(m);
+  el.innerHTML = `<input class="rename-input" style="font-size:15px;font-weight:650" />`;
+  const inp = el.querySelector(".rename-input");
+  inp.value = cur; inp.focus(); inp.select();
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return; settled = true;
+    if (save) { await saveRename(m.id, inp.value); m.customTitle = inp.value.replace(/\s+/g, " ").trim().slice(0, 200); }
+    el.textContent = sessionTitle(m);
+    render(); // reflect new title in the list behind the drawer
+  };
+  inp.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  inp.onblur = () => finish(true);
+}
+async function openSession(dirName, id, query = "", expectedCount = 0) {
+  lastFocus = document.activeElement;
+  $("#scrim").classList.add("open");
+  const d = $("#drawer"); d.classList.add("open"); d.setAttribute("aria-hidden", "false");
+  $("#drawerHead").innerHTML = "";
+  $("#drawerBody").innerHTML = `<div class="empty" style="margin-top:8vh"><p>Loading transcript…</p></div>`;
+  const r = await fetch(`/api/session?project=${encodeURIComponent(dirName)}&id=${encodeURIComponent(id)}`);
+  const data = await r.json();
+  if (data.error) { $("#drawerBody").innerHTML = `<div class="empty"><p>${esc(data.error)}</p></div>`; return; }
+  const m = data.meta || {};
+  const cwd = m.cwd || "";
+  const full = (cwd ? `cd "${cwd}" && ` : "") + `claude --resume ${id}`;
+  const dmeta = [];
+  if (cwd) dmeta.push(`<span>${esc(cwd)}</span>`);
+  if (m.gitBranch) dmeta.push(`<span class="branch">⎇ ${esc(m.gitBranch)}</span>`);
+  dmeta.push(`<span>${m.userMessages || 0} user msgs</span>`);
+  if (m.model) dmeta.push(`<span>${esc(shortModel(m.model))}</span>`);
+  drawerSession = { dirName, id, cwd };
+  $("#drawerHead").innerHTML = `
+    <div class="dtitle" id="dtitle">${esc(sessionTitle(m))}</div>
+    <div class="dmeta">${dmeta.join("")}</div>
+    <div class="dactions">
+      <button id="dRename">${IC.edit} rename</button>
+      <button id="dDelete" class="danger">${IC.trash} delete</button>
+    </div>
+    <div class="resume">
+      <code><span class="prompt">$ </span>${esc(full)}</code>
+      <button id="copyResume" title="Copy resume command (c)">Copy</button>
+    </div>
+    <div class="findbar" id="findbar" style="display:none"></div>`;
+  $("#copyResume").onclick = () => copyResume(full);
+  $("#dRename").onclick = () => startDrawerRename(m);
+  $("#dDelete").onclick = () => deleteSessionUI(dirName, id);
+
+  peekRepo(dirName); // surface which repo this session lives in
+
+  const msgs = data.messages || [];
+  if (!msgs.length) { $("#drawerBody").innerHTML = `<div class="empty"><p>No messages.</p></div>`; return; }
+  const sysCount = msgs.filter((x) => x.kind === "system").length;
+  // System plumbing (caveats, reminders, command output) is hidden by default so
+  // the human↔assistant thread reads cleanly; matches inside it are revealed on nav.
+  $("#drawerBody").className = "drawer-body hide-system";
+  const toggle = sysCount
+    ? `<div class="sys-toggle"><span>${sysCount} system message${sysCount > 1 ? "s" : ""} hidden</span><button id="sysToggle">Show</button></div>`
+    : "";
+  $("#drawerBody").innerHTML = `<div class="convo">${toggle}${msgs.map(renderTurn).join("")}</div>`;
+  const st = $("#sysToggle");
+  if (st) st.onclick = () => {
+    const hidden = $("#drawerBody").classList.toggle("hide-system");
+    st.textContent = hidden ? "Show" : "Hide";
+    $("#sysToggle").previousElementSibling.textContent = `${sysCount} system message${sysCount > 1 ? "s" : ""} ${hidden ? "hidden" : "shown"}`;
+  };
+
+  // Opened from a search hit: highlight, count, and jump to the first match.
+  // Opened from browse (no query): top of transcript, no find-bar.
+  if (query) applyHighlights(query, expectedCount);
+  else { find = { hits: [], idx: -1 }; $("#drawerBody").scrollTop = 0; $("#drawerBody").focus(); }
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+function renderTools(tools) {
+  return (tools || []).map((t) => {
+    if (t.kind === "use") return `<div class="tool-name">→ <b>${esc(t.name || "tool")}</b></div>`;
+    if (t.kind === "thinking") return `<div class="tool-name">· thinking</div>`;
+    if (t.kind === "result" && t.text) {
+      const head = t.text.replace(/\s+/g, " ").trim().slice(0, 64);
+      return `<details class="tool"><summary>result · ${esc(head)}…</summary><div class="tool-body">${esc(t.text)}</div></details>`;
+    }
+    return "";
+  }).join("");
+}
+function renderTurn(msg) {
+  const time = fmtTime(msg.ts);
+  const tline = time ? `<span class="t">${esc(time)}</span>` : "";
+  if (msg.kind === "command")
+    return `<div class="cmdline"><span class="cmd">${esc(msg.cmd || "/command")}</span>${time ? `<span class="ts">${esc(time)}</span>` : ""}</div>`;
+  if (msg.kind === "system")
+    return `<div class="sysmsg"><span class="stag">sys</span>${esc(msg.text || "")}</div>`;
+  const tools = msg.tools && msg.tools.length ? `<div class="tools">${renderTools(msg.tools)}</div>` : "";
+  if (msg.kind === "tool")
+    return `<div class="turn assistant"><div class="gutter">tool${tline}</div><div>${tools}</div></div>`;
+  const who = msg.kind === "prompt" ? "you" : "claude";
+  const cls = msg.kind === "prompt" ? "user" : "assistant";
+  const prose = msg.text && msg.text.trim() ? `<div class="prose">${esc(msg.text)}</div>` : "";
+  return `<div class="turn ${cls}"><div class="gutter">${who}${tline}</div><div>${prose}${tools}</div></div>`;
+}
+function peekRepo(dirName) {
+  const rail = $("#rail");
+  rail.querySelectorAll(".repo.viewing").forEach((e) => e.classList.remove("viewing"));
+  const el = rail.querySelector(`.repo[data-repo="${dirName}"]`);
+  if (el) { el.classList.add("viewing"); el.scrollIntoView({ block: "nearest" }); }
+}
+
+// Wrap every occurrence of q in the live transcript DOM with <mark class="hit">.
+// Walks text nodes so it never corrupts existing markup, and catches matches in
+// message text, tool names, and tool-result text alike.
+function wrapMatches(root, q) {
+  const ql = q.toLowerCase();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const targets = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.nodeValue.toLowerCase().includes(ql)) targets.push(node);
+  }
+  for (const t of targets) {
+    const text = t.nodeValue, lower = text.toLowerCase(), frag = document.createDocumentFragment();
+    let i = 0, idx;
+    while ((idx = lower.indexOf(ql, i)) !== -1) {
+      if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
+      const mk = document.createElement("mark");
+      mk.className = "hit";
+      mk.textContent = text.slice(idx, idx + q.length);
+      frag.appendChild(mk);
+      i = idx + q.length;
+    }
+    if (i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
+    t.parentNode.replaceChild(frag, t);
+  }
+  return Array.from(root.querySelectorAll("mark.hit"));
+}
+
+function applyHighlights(query, expectedCount) {
+  find.hits = wrapMatches($("#drawerBody"), query);
+  find.idx = -1;
+  renderFindbar(query, expectedCount);
+  if (find.hits.length) gotoHit(0);
+  else $("#drawerBody").scrollTop = 0;
+}
+
+function renderFindbar(query, expected) {
+  const bar = $("#findbar");
+  bar.style.display = "flex";
+  const total = find.hits.length;
+  if (!total) {
+    bar.className = "findbar none";
+    bar.innerHTML = `<span class="flabel">No visible match for <b>${esc(query)}</b>; it's likely in collapsed tool output.</span>`;
+    return;
+  }
+  bar.className = "findbar";
+  const gap = expected && expected > total
+    ? ` <span class="flabel">(of ${expected}; rest in collapsed output)</span>` : "";
+  bar.innerHTML = `<span class="flabel">matches for <b>${esc(query)}</b>${gap}</span>
+    <span class="fnav">
+      <button id="fPrev" aria-label="Previous match" title="Previous match (N)">‹</button>
+      <span class="fcount" id="fCount">1 / ${total}</span>
+      <button id="fNext" aria-label="Next match" title="Next match (n)">›</button>
+    </span>`;
+  $("#fPrev").onclick = () => stepHit(-1);
+  $("#fNext").onclick = () => stepHit(1);
+}
+
+function gotoHit(i) {
+  if (!find.hits.length) return;
+  if (find.idx >= 0 && find.hits[find.idx]) find.hits[find.idx].classList.remove("active");
+  find.idx = (i + find.hits.length) % find.hits.length;
+  const el = find.hits[find.idx];
+  el.classList.add("active");
+  // Reveal the match: open any collapsed tool <details> and any hidden system
+  // message that contains it, so the active hit is always visible.
+  let p = el.parentElement;
+  while (p && p.id !== "drawerBody") {
+    if (p.tagName === "DETAILS") p.open = true;
+    if (p.classList && p.classList.contains("sysmsg")) p.classList.add("revealed");
+    p = p.parentElement;
+  }
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+  const c = $("#fCount"); if (c) c.textContent = `${find.idx + 1} / ${find.hits.length}`;
+}
+function stepHit(delta) { gotoHit(find.idx + delta); }
+
+function copyResume(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const b = $("#copyResume"); if (!b) return;
+    b.textContent = "Copied ✓"; b.classList.add("done");
+    setTimeout(() => { b.textContent = "Copy"; b.classList.remove("done"); }, 1400);
+  });
+}
+function closeDrawer() {
+  $("#scrim").classList.remove("open");
+  const d = $("#drawer"); d.classList.remove("open"); d.setAttribute("aria-hidden", "true");
+  $("#rail").querySelectorAll(".repo.viewing").forEach((e) => e.classList.remove("viewing"));
+  if (lastFocus && lastFocus.focus) lastFocus.focus();
+}
+const drawerOpen = () => $("#drawer").classList.contains("open");
+
+/* ── search wiring ─────────────────────────────────────────────────────── */
+let searchTimer = null;
+$("#search").addEventListener("input", (e) => {
+  state.query = e.target.value.trim();
+  if (state.mode === "title") { render(); return; }
+  clearTimeout(searchTimer);
+  if (!state.query) { state.searchResults = null; render(); return; }
+  renderSkeleton();
+  searchTimer = setTimeout(runFullSearch, 280);
+});
+async function runFullSearch() {
+  const q = state.query;
+  const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+  const data = await r.json();
+  if (q !== state.query) return; // stale
+  state.searchResults = data;
+  render();
+}
+function setMode(mode) {
+  state.mode = mode;
+  $("#mTitle").setAttribute("aria-pressed", mode === "title");
+  $("#mFull").setAttribute("aria-pressed", mode === "full");
+  $("#search").placeholder = mode === "title" ? "Filter by title, repo, or branch" : "Search inside transcripts (full text)";
+  state.searchResults = null;
+  if (mode === "full" && state.query) { renderSkeleton(); runFullSearch(); } else render();
+}
+$("#mTitle").onclick = () => setMode("title");
+$("#mFull").onclick = () => setMode("full");
+$("#refresh").onclick = async () => { await fetch("/api/refresh"); state.searchResults = null; await load(); };
+$("#drawerClose").onclick = closeDrawer;
+$("#scrim").onclick = closeDrawer;
+
+/* ── keyboard ──────────────────────────────────────────────────────────── */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { if (drawerOpen()) { closeDrawer(); e.preventDefault(); } else if ($("#search").value) { $("#search").value = ""; state.query = ""; state.searchResults = null; render(); } return; }
+  if (drawerOpen()) {
+    if (find.hits.length) {
+      if (e.key === "n" || e.key === "ArrowDown") { stepHit(1); e.preventDefault(); return; }
+      if (e.key === "N" || e.key === "ArrowUp") { stepHit(-1); e.preventDefault(); return; }
+    }
+    if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey && document.activeElement.tagName !== "INPUT") {
+      const code = $("#drawer .resume code"); if (code) copyResume(code.textContent.replace(/^\$\s*/, "")); e.preventDefault();
+    }
+    return;
+  }
+  const typing = document.activeElement === $("#search");
+  if (e.key === "/" && !typing) { e.preventDefault(); $("#search").focus(); return; }
+  if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); }
+  else if (e.key === "Enter" && state.selIndex >= 0) { const row = state.rows[state.selIndex]; if (row) openSession(row.dirName, row.id, state.mode === "full" ? state.query : "", row.mc || 0); }
+  else if (e.key === "Delete" && !typing && state.selIndex >= 0) { const row = state.rows[state.selIndex]; if (row) { e.preventDefault(); deleteSessionUI(row.dirName, row.id); } }
+});
+
+load();
+</script>
+</body>
+</html>
