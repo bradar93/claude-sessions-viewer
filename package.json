@@ -2,9 +2,11 @@
   "name": "claude-session-browser",
   "version": "1.0.0",
   "description": "Browse and search Claude Code sessions across all your repos",
-  "bin": { "claude-sessions": "server.js" },
+  "bin": { "claude-sessions": "server.js", "claude-sync": "sync.js" },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "sync": "node sync.js",
+    "sync:status": "node sync.js status"
   },
   "license": "MIT"
 }
