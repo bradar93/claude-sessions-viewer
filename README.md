@@ -47,31 +47,46 @@ CLAUDE_DIR="/path/to/.claude/projects" node server.js
 
 ## Syncing across machines (`sync.js`)
 
-`sync.js` mirrors `~/.claude` into a git repo and back, so sessions, memories,
-skills, hooks and settings follow you between computers — even when the repos
-live at different absolute paths on each one.
+`sync.js` mirrors `~/.claude` into `claude-data/` in this repo and back, so
+sessions, memories, skills, hooks and settings follow you between computers —
+even when the repos live at different absolute paths on each one.
+
+> **This repo must stay private.** `claude-data/` holds your full conversation
+> history: every prompt, every file you have had open, anything that ever
+> appeared in tool output.
 
 ### Setup (once per machine)
 
 ```bash
-node sync.js init --repo ~/claude-config --root PROJECTS=D:/projects
-cd ~/claude-config && gh repo create claude-config --private --source=. --push
+node sync.js init --repo ./claude-data --root PROJECTS=D:/projects
+node sync.js push
 ```
 
 `--root NAME=path` declares a portable root. Everything under `D:/projects` is
-stored in the repo as `{PROJECTS}/...`; on your laptop you point `{PROJECTS}`
-at `/Users/you/code` and the same sessions resume there. `{HOME}` is added
+stored as `{PROJECTS}/...`; on your laptop you point `{PROJECTS}` at
+`/Users/you/code` and the same sessions resume there. `{HOME}` is added
 automatically. Machine-specific config lives in `~/.claude/sync.config.json`
 and is never committed.
 
+`init` detects that `claude-data/` sits inside this checkout and rides its git
+repo rather than nesting a second one. Every sync commit is scoped to
+`claude-data/`, so source edits you have staged are never swept into it.
+
 ### Day to day
+
+Everything is reachable from the app — `node server.js`, then **Sync** in the
+header. The panel shows what is stored, how each project maps onto this
+machine, and how far ahead or behind you are, with buttons for pull-and-import,
+export-and-push, or both. A dot on the button means there is something
+uncommitted or unpushed. The same operations from the terminal:
 
 ```bash
 node sync.js            # pull + import + export + commit + push
 node sync.js status     # dry run: what would change, both directions
 node sync.js projects   # how each project maps onto this machine
-node sync.js export     # ~/.claude -> repo
-node sync.js import     # repo -> ~/.claude
+node sync.js state      # the same, as JSON (what the app's panel consumes)
+node sync.js export     # ~/.claude -> claude-data/
+node sync.js import     # claude-data/ -> ~/.claude
 ```
 
 ### How a project is matched across machines
@@ -149,7 +164,7 @@ Run `import` with Claude Code closed, since it rewrites `~/.claude.json`
   round-tripping is otherwise byte-exact.
 - Sessions are treated as append-only: import refuses to overwrite a local
   transcript that is longer than the incoming one.
-- **Keep the config repo private.** It contains your full session history.
+- **Keep this repo private.** `claude-data/` contains your full session history.
 
 ## How it works
 
@@ -161,3 +176,8 @@ three JSON endpoints consumed by `public/index.html`:
 - `GET /api/search?q=` — full-text search across transcript content
 - `GET /api/session?project=&id=` — one rendered transcript
 - `GET /api/refresh` — clear the metadata cache and rescan
+- `GET /api/sync/state` — sync standing and per-project resolution
+- `GET /api/sync/run?op=` — run a sync operation, returns its log
+
+`sync.js` runs as a child process rather than in-process: exporting 200MB would
+block the event loop for seconds, and a child hands back its output for free.

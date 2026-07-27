@@ -7,6 +7,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { execFile } = require("child_process");
 
 // ---- config ----------------------------------------------------------------
 function parseArgs() {
@@ -412,6 +413,18 @@ function getSession(dirName, id) {
   return { meta, messages };
 }
 
+// ---- sync ------------------------------------------------------------------
+// sync.js runs as a child rather than in-process: a 200MB export would block
+// the event loop for seconds, and a child gives us its output for free.
+const SYNC_JS = path.join(__dirname, "sync.js");
+const SYNC_OPS = new Set(["state", "status", "export", "import", "push", "pull", "sync", "projects"]);
+
+function runSync(op, cb) {
+  if (!SYNC_OPS.has(op)) return cb(new Error("Unknown sync operation."), "");
+  execFile(process.execPath, [SYNC_JS, op], { cwd: __dirname, maxBuffer: 16 * 1024 * 1024 },
+    (err, stdout, stderr) => cb(err, (stdout || "") + (stderr || "")));
+}
+
 // ---- http server -----------------------------------------------------------
 function sendJson(res, obj) {
   const body = JSON.stringify(obj);
@@ -453,6 +466,22 @@ const server = http.createServer((req, res) => {
     }
     if (p === "/api/annotate") {
       return sendJson(res, annotate(url.searchParams.get("id"), url.searchParams.get("title") || ""));
+    }
+    if (p === "/api/sync/state") {
+      return runSync("state", (err, out) => {
+        if (err) return sendJson(res, { configured: false, error: out.trim() || err.message });
+        try { return sendJson(res, { configured: true, ...JSON.parse(out) }); }
+        catch { return sendJson(res, { configured: false, error: out.trim() }); }
+      });
+    }
+    if (p === "/api/sync/run") {
+      const op = url.searchParams.get("op") || "";
+      return runSync(op, (err, out) => {
+        // A failed sync still returns its log; that text is the whole diagnosis.
+        metaCache.clear();
+        searchCache.clear();
+        sendJson(res, { ok: !err, op, output: out.trim() });
+      });
     }
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");

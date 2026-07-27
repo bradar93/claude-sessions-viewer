@@ -303,6 +303,37 @@ function resolveAll(cfg, fn, index) {
   return out;
 }
 
+// `sync.js state` — the same picture as `projects`, plus git standing, as JSON
+// for the viewer UI. Prints nothing else, so stdout stays parseable.
+function doState(cfg) {
+  const pairs = rootPairs(cfg);
+  const index = scanCheckouts(cfg);
+  const projects = resolveAll(cfg, (s) => toLocal(s, pairs), index).map((p) => ({
+    cwd: p.meta.cwd,
+    slug: p.meta.slug,
+    remote: p.meta.remote,
+    dir: p.dir,
+    how: p.how,
+    exists: p.dir ? fs.existsSync(p.dir) : false,
+    collidesWith: p.collision ? p.collision.meta.cwd || p.collision.meta.slug : null,
+    sessions: safeReaddir(path.join(repoProjectDir(cfg, p.name), "sessions")).filter((f) => f.endsWith(".jsonl")).length,
+  }));
+  const q = (...a) => { try { return git(cfg, ...a); } catch { return null; } };
+  process.stdout.write(JSON.stringify({
+    repo: cfg.repo,
+    gitRoot: gitRoot(cfg),
+    scope: scope(cfg),
+    roots: cfg.roots,
+    branch: q("rev-parse", "--abbrev-ref", "HEAD"),
+    remote: q("remote", "get-url", "origin"),
+    ahead: Number(q("rev-list", "--count", "@{u}..HEAD")) || 0,
+    behind: Number(q("rev-list", "--count", "HEAD..@{u}")) || 0,
+    pending: (q("status", "--short", "--", scope(cfg)) || "").split("\n").filter(Boolean).length,
+    checkouts: index.size,
+    projects,
+  }, null, 2) + "\n");
+}
+
 // `sync.js projects` — show how every exported project maps onto this machine.
 function doProjects(cfg) {
   const pairs = rootPairs(cfg);
@@ -451,21 +482,39 @@ function importClaudeJson(cfg, fn) {
 }
 
 // ---- git -------------------------------------------------------------------
+// The data dir may be a repo of its own or a subdirectory of a larger one, so
+// every git call runs against the enclosing worktree and scopes writes to the
+// data path — never `add -A` over a parent repo that also holds source.
+function gitRoot(cfg) {
+  try {
+    return execFileSync("git", ["-C", cfg.repo, "rev-parse", "--show-toplevel"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch { return null; }
+}
+
 function git(cfg, ...args) {
-  return execFileSync("git", args, { cwd: cfg.repo, encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", gitRoot(cfg) || cfg.repo, ...args], { encoding: "utf8" }).trim();
 }
 
 function hasRemote(cfg) {
   try { return git(cfg, "remote").length > 0; } catch { return false; }
 }
 
+// "." when the data dir *is* the repo, else its path relative to the root.
+function scope(cfg) {
+  const root = gitRoot(cfg);
+  if (!root) return ".";
+  const rel = path.relative(path.resolve(root), path.resolve(cfg.repo)).replace(/\\/g, "/");
+  return rel || ".";
+}
+
 function doPush(cfg) {
   doExport(cfg);
-  git(cfg, "add", "-A");
+  git(cfg, "add", "--", scope(cfg));
   let staged = "";
-  try { staged = git(cfg, "diff", "--cached", "--name-only"); } catch {}
+  try { staged = git(cfg, "diff", "--cached", "--name-only", "--", scope(cfg)); } catch {}
   if (!staged) { log("\nNothing to commit."); return; }
-  git(cfg, "commit", "-m", `sync from ${os.hostname()}`);
+  git(cfg, "commit", "-m", `sync from ${os.hostname()}`, "--", scope(cfg));
   if (!hasRemote(cfg)) { log("\nCommitted. No git remote configured — add one to push."); return; }
   log(git(cfg, "push"));
   log("\nPushed.");
@@ -483,7 +532,7 @@ function doStatus(cfg) {
   Object.assign(stats, { written: 0, same: 0, skipped: [] });
   log("\n=== would import ===");
   doImport(cfg);
-  try { const s = git(cfg, "status", "--short"); log("\n=== git ===\n" + (s || "clean")); } catch {}
+  try { const s = git(cfg, "status", "--short", "--", scope(cfg)); log("\n=== git ===\n" + (s || "clean")); } catch {}
 }
 
 // ---- init ------------------------------------------------------------------
@@ -498,10 +547,10 @@ sync.config.json
 const GITATTRIBUTES = `* -text
 `;
 
-const README = `# claude-config
+const README = `# claude-data
 
 Synced Claude Code config, skills, memories and sessions.
-Managed by \`node sync.js\` from claude-sessions-viewer.
+Managed by \`node sync.js\` one directory up.
 
 Paths are stored as \`{TOKEN}/...\` and resolved per machine via
 \`~/.claude/sync.config.json\`. **Keep this repo private** — sessions contain
@@ -524,9 +573,14 @@ function doInit(argv) {
   if (!cfg.roots.HOME) cfg.roots.HOME = os.homedir();
 
   fs.mkdirSync(cfg.repo, { recursive: true });
-  if (!fs.existsSync(path.join(cfg.repo, ".git"))) {
+  // A data dir inside an existing checkout rides that repo rather than nesting
+  // a second one, which git would only half-see.
+  const enclosing = gitRoot(cfg);
+  if (!enclosing) {
     execFileSync("git", ["init", "-q"], { cwd: cfg.repo });
     log(`git init ${cfg.repo}`);
+  } else {
+    log(`using enclosing repo ${enclosing}`);
   }
   for (const [f, body] of [[".gitignore", GITIGNORE], [".gitattributes", GITATTRIBUTES], ["README.md", README]]) {
     const p = path.join(cfg.repo, f);
@@ -536,14 +590,15 @@ function doInit(argv) {
 
   log(`\nWrote ${CONFIG_FILE}`);
   for (const [t, p] of Object.entries(cfg.roots)) log(`  {${t}} -> ${p}`);
-  log(`\nNext:\n  node sync.js export\n  cd ${cfg.repo} && git add -A && git commit -m init`);
-  log(`  gh repo create claude-config --private --source=. --push`);
+  log(`\nNext:\n  node sync.js push`);
+  if (!enclosing) log(`  cd ${cfg.repo} && gh repo create claude-data --private --source=. --push`);
+  else log(`  make sure ${enclosing} is private — it will hold your session history`);
 }
 
 // ---- cli -------------------------------------------------------------------
 let DRY = false;
 function log(s) { process.stdout.write(s + "\n"); }
-function die(msg) { process.stderr.write(msg + "\n"); process.exit(1); }
+function die(msg) { throw new Error(msg); }
 
 function report(what, dest) {
   log(`\n${what}: ${stats.written} file(s) ${DRY ? "would change" : "written"}, ${stats.same} unchanged -> ${dest}`);
@@ -565,10 +620,16 @@ function main() {
   if (cmd === "import") return doImport(cfg);
   if (cmd === "status") return doStatus(cfg);
   if (cmd === "projects") return doProjects(cfg);
+  if (cmd === "state") return doState(cfg);
   if (cmd === "push") return doPush(cfg);
   if (cmd === "pull") return doPull(cfg);
   if (cmd === "sync") { doPull(cfg); Object.assign(stats, { written: 0, same: 0, skipped: [] }); return doPush(cfg); }
-  die(`Unknown command "${cmd}". Try: init, export, import, status, projects, push, pull, sync`);
+  die(`Unknown command "${cmd}". Try: init, export, import, status, projects, state, push, pull, sync`);
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  process.stderr.write((e && e.message ? e.message : String(e)) + "\n");
+  process.exit(1);
+}
