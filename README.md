@@ -69,8 +69,46 @@ and is never committed.
 ```bash
 node sync.js            # pull + import + export + commit + push
 node sync.js status     # dry run: what would change, both directions
+node sync.js projects   # how each project maps onto this machine
 node sync.js export     # ~/.claude -> repo
 node sync.js import     # repo -> ~/.claude
+```
+
+### How a project is matched across machines
+
+Export records each project's `origin` URL alongside its portable path, so a
+repo is identified by what it *is* rather than only by where it sits. On import,
+in order:
+
+1. **`projectMap`** — an explicit pin in `sync.config.json`. Always wins.
+2. **Origin URL**, when exactly one local checkout has it. Normalised, so
+   `git@github.com:Qweebi/x.git` matches `https://github.com/Qweebi/x`. This is
+   what survives a machine that nests or names its checkouts differently.
+3. **Origin URL + trailing path**, when several checkouts share an origin —
+   duplicate clones and worktrees are common, so the one whose tail matches the
+   exporting machine's path wins.
+4. **Root substitution** — `{PROJECTS}/qweebi/x` under this machine's
+   `{PROJECTS}`. The fallback when there is no origin or no local clone.
+
+`node sync.js projects` prints the whole table:
+
+```
+ok   {PROJECTS}/qweebi/qweebi-website
+     -> /Users/you/code/site   [origin]
+     origin github.com/qweebi/qweebi-website
+MISS {PROJECTS}/qweebi/dashboard
+     -> /Users/you/code/qweebi/dashboard   [roots]
+DUP  {PROJECTS}/qweebi/qweebi-website-tmp/qweebi-website
+     -> collides with {PROJECTS}/qweebi/qweebi-website at /Users/you/code/site
+```
+
+`MISS` means the resolved path is not on this machine — harmless, but those
+sessions stay invisible until you clone the repo or pin it. `DUP` means two
+exported projects resolve to one local directory; import **skips** the loser
+rather than merge two session histories into it. Both are fixed the same way:
+
+```json
+"projectMap": { "{PROJECTS}/qweebi/qweebi-website-tmp/qweebi-website": "/Users/you/code/site-tmp" }
 ```
 
 Run `import` with Claude Code closed, since it rewrites `~/.claude.json`
@@ -99,6 +137,9 @@ Run `import` with Claude Code closed, since it rewrites `~/.claude.json`
 | `claudeJson` | `true` | merge MCP servers and project trust |
 | `sinceDays` | `0` | `0` = all sessions, `30` = only recently touched |
 | `maxFileMB` | `90` | skip blobs GitHub would reject |
+| `projectMap` | `{}` | portable cwd → absolute path here; beats every guess |
+| `scanRoots` | roots minus `HOME` | where to look for checkouts to match by origin |
+| `scanDepth` | `4` | how deep that scan descends before giving up |
 
 ### Caveats
 

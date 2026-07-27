@@ -54,6 +54,9 @@ const DEFAULTS = {
   claudeJson: true,
   maxFileMB: 90,    // GitHub rejects blobs over 100MB
   sinceDays: 0,     // 0 = every session, N = only ones touched in N days
+  projectMap: {},   // portable cwd -> absolute path here; beats every guess
+  scanRoots: [],    // where to look for checkouts; defaults to roots minus HOME
+  scanDepth: 4,
 };
 
 function loadConfig() {
@@ -199,6 +202,124 @@ function resolveCwd(slug, dir) {
 
 function safeReaddir(p) { try { return fs.readdirSync(p); } catch { return []; } }
 
+// ---- repo identity ---------------------------------------------------------
+// A checkout's origin URL survives moving machines, so it is a far better
+// handle on "the same repo" than the absolute path ever is.
+function gitRemote(dir) {
+  try {
+    return execFileSync("git", ["-C", dir, "remote", "get-url", "origin"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch { return null; }
+}
+
+// git@github.com:Qweebi/x.git and https://github.com/Qweebi/x are one repo.
+function normRemote(url) {
+  if (!url) return null;
+  const s = url.trim().replace(/^git\+/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
+  let m = s.match(/^[\w.+-]+@([^:]+):(.+)$/);            // scp-style
+  if (m) return `${m[1]}/${m[2]}`.toLowerCase();
+  m = s.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/i);
+  if (m) return `${m[1].replace(/:\d+$/, "")}/${m[2]}`.toLowerCase();
+  return s.toLowerCase();
+}
+
+// Index every checkout under the scan roots by origin. Descent stops at a
+// repo boundary, so this is cheap even over a large projects tree.
+function scanCheckouts(cfg) {
+  const roots = cfg.scanRoots.length
+    ? cfg.scanRoots
+    : Object.entries(cfg.roots).filter(([t]) => t !== "HOME").map(([, p]) => p);
+  const index = new Map();
+  const seen = new Set();
+  const walk = (dir, depth) => {
+    const key = dir.toLowerCase();
+    if (depth > cfg.scanDepth || seen.has(key)) return;
+    seen.add(key);
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    if (ents.some((e) => e.name === ".git")) {
+      const r = normRemote(gitRemote(dir));
+      if (r) { if (!index.has(r)) index.set(r, []); index.get(r).push(dir); }
+      return;
+    }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.name.startsWith(".") || e.name === "node_modules") continue;
+      walk(path.join(dir, e.name), depth + 1);
+    }
+  };
+  for (const r of roots) walk(path.resolve(r), 1);
+  return index;
+}
+
+// Where does this exported project live on *this* machine? Explicit mapping
+// wins, then origin URL, then plain root substitution.
+function resolveProject(meta, cfg, fn, index) {
+  const override = cfg.projectMap[meta.cwd] || cfg.projectMap[meta.slug];
+  if (override) return { dir: path.resolve(override), how: "override" };
+
+  const hits = meta.remote ? index.get(meta.remote) : null;
+  if (hits && hits.length === 1) return { dir: hits[0], how: "origin" };
+  if (hits && hits.length > 1) {
+    // Duplicate checkouts and worktrees share an origin. Break the tie on the
+    // trailing path, which is what distinguished them on the other machine.
+    const want = "/" + meta.cwd.replace(/^\{[^}]+\}[\\/]/, "").toLowerCase();
+    const exact = hits.find((h) => h.replace(/\\/g, "/").toLowerCase().endsWith(want));
+    if (exact) return { dir: exact, how: "origin+path" };
+  }
+
+  if (meta.cwd) {
+    const local = fn(meta.cwd);
+    if (!/\{[A-Z0-9_]+\}/.test(local)) {
+      return { dir: path.resolve(local), how: hits ? "roots (origin ambiguous)" : "roots" };
+    }
+  }
+  return { dir: null, how: "unresolved" };
+}
+
+function repoProjectDir(cfg, name) { return path.join(cfg.repo, "projects", name); }
+
+function resolveAll(cfg, fn, index) {
+  const out = [];
+  for (const name of safeReaddir(path.join(cfg.repo, "projects"))) {
+    let meta;
+    try { meta = JSON.parse(fs.readFileSync(path.join(repoProjectDir(cfg, name), "project.json"), "utf8")); } catch { continue; }
+    out.push({ name, meta, ...resolveProject(meta, cfg, fn, index) });
+  }
+  // Two checkouts on the exporting machine can share one on this machine — a
+  // duplicate clone that was never made here. Merging their transcripts into a
+  // single directory would be silent history corruption, so only the closest
+  // match keeps the slot and the rest ask to be pinned.
+  const claimed = new Map();
+  for (const p of out) {
+    if (!p.dir) continue;
+    const key = p.dir.toLowerCase();
+    const prev = claimed.get(key);
+    if (!prev) { claimed.set(key, p); continue; }
+    const loser = p.how === "origin+path" && prev.how !== "origin+path" ? prev : p;
+    if (loser === prev) claimed.set(key, p);
+    loser.collision = claimed.get(key);
+    loser.dir = null;
+    loser.how = "collision";
+  }
+  return out;
+}
+
+// `sync.js projects` — show how every exported project maps onto this machine.
+function doProjects(cfg) {
+  const pairs = rootPairs(cfg);
+  const index = scanCheckouts(cfg);
+  log(`${index.size} checkout(s) indexed by origin\n`);
+  for (const { meta, dir, how, collision } of resolveAll(cfg, (s) => toLocal(s, pairs), index)) {
+    const ok = collision ? "DUP " : dir && fs.existsSync(dir) ? "ok  " : dir ? "MISS" : "??  ";
+    log(`${ok} ${meta.cwd || meta.slug}`);
+    log(collision
+      ? `     -> collides with ${collision.meta.cwd} at ${collision.dir}`
+      : `     -> ${dir || "(unresolved)"}   [${how}]`);
+    if (meta.remote) log(`     origin ${meta.remote}`);
+  }
+  log(`\nMISS = resolved to a path that is not here. Pin it in ${CONFIG_FILE}:`);
+  log(`  "projectMap": { "{PROJECTS}/some/repo": "/actual/path/here" }`);
+}
+
 // {PROJECTS}/qweebi/site -> PROJECTS_qweebi_site
 function repoName(portableCwd) {
   return portableCwd.replace(/[{}]/g, "").replace(/^[\\/]+/, "").replace(/[\\/:*?"<>|]/g, "_");
@@ -234,8 +355,13 @@ function doExport(cfg) {
 
       if (!DRY) {
         fs.mkdirSync(out, { recursive: true });
-        fs.writeFileSync(path.join(out, "project.json"),
-          JSON.stringify({ cwd: portable, slug }, null, 2) + "\n");
+        const meta = { cwd: portable, slug, remote: cwd ? normRemote(gitRemote(cwd)) : null };
+        // Keep a remote recorded by another machine if this one can no longer
+        // see the checkout — losing it would downgrade future resolution.
+        if (!meta.remote) {
+          try { meta.remote = JSON.parse(fs.readFileSync(path.join(out, "project.json"), "utf8")).remote || null; } catch {}
+        }
+        fs.writeFileSync(path.join(out, "project.json"), JSON.stringify(meta, null, 2) + "\n");
       }
       if (cfg.memory) copyTree(path.join(dir, "memory"), path.join(out, "memory"), fn, cfg);
       if (cfg.sessions) {
@@ -283,23 +409,26 @@ function doImport(cfg) {
   if (cfg.claudeJson) importClaudeJson(cfg, fn);
 
   log("projects:");
-  for (const name of safeReaddir(path.join(cfg.repo, "projects"))) {
-    const dir = path.join(cfg.repo, "projects", name);
-    let meta; try { meta = JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8")); } catch { continue; }
-    let dstSlug;
-    if (meta.cwd) {
-      const localCwd = fn(meta.cwd);
-      // An unresolved token means this project's root is not mapped here — skip
-      // rather than create a directory named after a literal "{TOKEN}".
-      if (/\{[A-Z0-9_]+\}/.test(localCwd)) { stats.skipped.push(`${meta.cwd} (no matching root)`); continue; }
-      dstSlug = slugify(path.resolve(localCwd));
-    } else {
-      dstSlug = meta.slug;
+  const index = scanCheckouts(cfg);
+  for (const { name, meta, dir, how, collision } of resolveAll(cfg, fn, index)) {
+    if (collision) {
+      stats.skipped.push(`${meta.cwd || meta.slug} (would land on the same directory as ${collision.meta.cwd} — pin it in projectMap)`);
+      continue;
     }
-    if (!dstSlug || dstSlug.includes("..") || /[\\/]/.test(dstSlug)) { stats.skipped.push(`${name} (bad slug)`); continue; }
+    let dstSlug;
+    if (dir) {
+      dstSlug = slugify(dir);
+      if (!fs.existsSync(dir)) log(`  ! ${meta.cwd || meta.slug}\n      -> ${dir} (via ${how}) does not exist here`);
+    } else if (meta.slug) {
+      dstSlug = meta.slug;              // cwd was never decodable; keep it as-is
+    } else {
+      stats.skipped.push(`${name} (unresolved)`);
+      continue;
+    }
+    if (dstSlug.includes("..") || /[\\/]/.test(dstSlug)) { stats.skipped.push(`${name} (bad slug)`); continue; }
     const dst = path.join(CLAUDE_DIR, "projects", dstSlug);
-    if (cfg.memory) copyTree(path.join(dir, "memory"), path.join(dst, "memory"), fn, cfg);
-    if (cfg.sessions) copyTree(path.join(dir, "sessions"), dst, fn, cfg);
+    if (cfg.memory) copyTree(path.join(repoProjectDir(cfg, name), "memory"), path.join(dst, "memory"), fn, cfg);
+    if (cfg.sessions) copyTree(path.join(repoProjectDir(cfg, name), "sessions"), dst, fn, cfg);
   }
   report("import", CLAUDE_DIR);
   if (stats.written) log("\nRestart Claude Code so it picks up the imported config.");
@@ -435,10 +564,11 @@ function main() {
   if (cmd === "export") return doExport(cfg);
   if (cmd === "import") return doImport(cfg);
   if (cmd === "status") return doStatus(cfg);
+  if (cmd === "projects") return doProjects(cfg);
   if (cmd === "push") return doPush(cfg);
   if (cmd === "pull") return doPull(cfg);
   if (cmd === "sync") { doPull(cfg); Object.assign(stats, { written: 0, same: 0, skipped: [] }); return doPush(cfg); }
-  die(`Unknown command "${cmd}". Try: init, export, import, status, push, pull, sync`);
+  die(`Unknown command "${cmd}". Try: init, export, import, status, projects, push, pull, sync`);
 }
 
 main();
