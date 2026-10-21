@@ -1,3 +1,6 @@
 # Per-user runtime data
 annotations.json
 node_modules/
+# Synced Claude history — private, never commit
+claude-data/
+*.zip

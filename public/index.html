@@ -364,9 +364,9 @@
   </div>
   <div class="sync-body" id="syncBody"></div>
   <div class="sync-actions">
-    <button id="syncPull" title="Fetch, then apply to ~/.claude">Pull &amp; import</button>
-    <button id="syncPush" title="Export ~/.claude, commit, push">Export &amp; push</button>
-    <button id="syncBoth" class="primary" title="Pull, import, export, commit, push">Sync both ways</button>
+    <button id="syncPull" title="Unpack the zip, then apply to ~/.claude">Unzip &amp; import</button>
+    <button id="syncPush" title="Export ~/.claude into the zip">Export to zip</button>
+    <button id="syncBoth" class="primary" title="Unzip, import, export, re-zip">Sync both ways</button>
   </div>
 </aside>
 
@@ -809,7 +809,7 @@ function renderSync() {
       (s.error ? `<div class="sync-log">${esc(s.error)}</div>` : "");
     return;
   }
-  $("#syncWhere").textContent = `${s.repo}  ·  ${s.branch || "?"}${s.remote ? "  ·  " + s.remote : "  ·  no remote"}`;
+  $("#syncWhere").textContent = s.zip;
 
   const byStatus = { ok: 0, miss: 0, dup: 0, none: 0 };
   s.projects.forEach((p) => byStatus[projStatus(p)]++);
@@ -819,8 +819,8 @@ function renderSync() {
     `<div class="sync-stats">` +
     `<div><b>${sessions}</b>sessions stored</div>` +
     `<div><b>${byStatus.ok}</b>repos matched here</div>` +
-    `<div><b>${s.pending}</b>pending changes</div>` +
-    `<div><b>${s.ahead}/${s.behind}</b>ahead / behind</div>` +
+    `<div><b>${s.zipBytes == null ? "—" : fmtBytes(s.zipBytes)}</b>archive size</div>` +
+    `<div><b>${s.zipTime ? timeAgo(s.zipTime) : "never"}</b>last written</div>` +
     `</div>`;
 
   if (byStatus.miss || byStatus.dup) {
@@ -857,10 +857,10 @@ async function loadSync() {
   updateSyncDot();
 }
 
-// A dot on the header button when there is anything uncommitted or unpushed.
+// A dot on the header button when no archive has been written yet.
 function updateSyncDot() {
   const s = sync.state, dot = $("#syncDot");
-  const pending = s && s.configured && (s.pending > 0 || s.ahead > 0 || s.behind > 0);
+  const pending = s && s.configured && !s.zipTime;
   dot.style.cssText = pending
     ? "display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-left:7px;vertical-align:middle"
     : "display:none";

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Claude config sync — mirrors ~/.claude into a git repo and back, rewriting
+// Claude config sync — mirrors ~/.claude into a zip archive and back, rewriting
 // absolute paths through named root tokens so the same sessions, memories and
 // settings resume cleanly on a machine that keeps its repos somewhere else.
 //
-//   node sync.js init --repo <dir> --root PROJECTS=D:/projects
+//   node sync.js init --repo <dir> [--zip <file>] --root PROJECTS=D:/projects
 //   node sync.js export | import | status | push | pull
 //   node sync.js                       (= pull + import + export + push)
 
@@ -47,12 +47,13 @@ const TEXT_EXT = new Set([
 
 // ---- config ----------------------------------------------------------------
 const DEFAULTS = {
-  repo: "",
+  repo: "",         // unpacked staging dir
+  zip: "",          // the archive you carry between machines; default <repo>.zip
   roots: {},        // TOKEN -> absolute path on this machine
   sessions: true,
   memory: true,
   claudeJson: true,
-  maxFileMB: 90,    // GitHub rejects blobs over 100MB
+  maxFileMB: 90,
   sinceDays: 0,     // 0 = every session, N = only ones touched in N days
   projectMap: {},   // portable cwd -> absolute path here; beats every guess
   scanRoots: [],    // where to look for checkouts; defaults to roots minus HOME
@@ -65,6 +66,7 @@ function loadConfig() {
   catch { die(`No sync config. Run:\n  node sync.js init --repo <dir> --root PROJECTS=${path.join(os.homedir(), "projects").replace(/\\/g, "/")}`); }
   cfg = { ...DEFAULTS, ...cfg };
   if (!cfg.repo) die("sync.config.json has no repo path.");
+  if (!cfg.zip) cfg.zip = cfg.repo.replace(/[\\/]+$/, "") + ".zip";
   return cfg;
 }
 
@@ -303,7 +305,7 @@ function resolveAll(cfg, fn, index) {
   return out;
 }
 
-// `sync.js state` — the same picture as `projects`, plus git standing, as JSON
+// `sync.js state` — the same picture as `projects`, plus the archive, as JSON
 // for the viewer UI. Prints nothing else, so stdout stays parseable.
 function doState(cfg) {
   const pairs = rootPairs(cfg);
@@ -318,17 +320,13 @@ function doState(cfg) {
     collidesWith: p.collision ? p.collision.meta.cwd || p.collision.meta.slug : null,
     sessions: safeReaddir(path.join(repoProjectDir(cfg, p.name), "sessions")).filter((f) => f.endsWith(".jsonl")).length,
   }));
-  const q = (...a) => { try { return git(cfg, ...a); } catch { return null; } };
+  let zst = null; try { zst = fs.statSync(cfg.zip); } catch {}
   process.stdout.write(JSON.stringify({
     repo: cfg.repo,
-    gitRoot: gitRoot(cfg),
-    scope: scope(cfg),
+    zip: cfg.zip,
+    zipBytes: zst ? zst.size : null,
+    zipTime: zst ? zst.mtimeMs : null,
     roots: cfg.roots,
-    branch: q("rev-parse", "--abbrev-ref", "HEAD"),
-    remote: q("remote", "get-url", "origin"),
-    ahead: Number(q("rev-list", "--count", "@{u}..HEAD")) || 0,
-    behind: Number(q("rev-list", "--count", "HEAD..@{u}")) || 0,
-    pending: (q("status", "--short", "--", scope(cfg)) || "").split("\n").filter(Boolean).length,
     checkouts: index.size,
     projects,
   }, null, 2) + "\n");
@@ -481,47 +479,51 @@ function importClaudeJson(cfg, fn) {
   stats.written++;
 }
 
-// ---- git -------------------------------------------------------------------
-// The data dir may be a repo of its own or a subdirectory of a larger one, so
-// every git call runs against the enclosing worktree and scopes writes to the
-// data path — never `add -A` over a parent repo that also holds source.
-function gitRoot(cfg) {
-  try {
-    return execFileSync("git", ["-C", cfg.repo, "rev-parse", "--show-toplevel"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch { return null; }
+// ---- zip -------------------------------------------------------------------
+// bsdtar reads and writes zip (-a picks the format from the extension) and
+// ships with Windows 10+ and macOS. On Windows, call it by full path: Git Bash
+// puts GNU tar first on PATH, and GNU tar cannot write zip.
+function tarBin() {
+  return process.platform === "win32"
+    ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+    : "tar";
 }
 
-function git(cfg, ...args) {
-  return execFileSync("git", ["-C", gitRoot(cfg) || cfg.repo, ...args], { encoding: "utf8" }).trim();
+function zipDir(dir, zip) {
+  if (process.platform === "linux") {
+    // shortcut: Linux tar is usually GNU tar, so this needs `zip` installed.
+    execFileSync("zip", ["-qr", path.resolve(zip), "."], { cwd: dir });
+  } else {
+    execFileSync(tarBin(), ["-a", "-cf", path.resolve(zip), "-C", dir, "."]);
+  }
 }
 
-function hasRemote(cfg) {
-  try { return git(cfg, "remote").length > 0; } catch { return false; }
-}
-
-// "." when the data dir *is* the repo, else its path relative to the root.
-function scope(cfg) {
-  const root = gitRoot(cfg);
-  if (!root) return ".";
-  const rel = path.relative(path.resolve(root), path.resolve(cfg.repo)).replace(/\\/g, "/");
-  return rel || ".";
+function unzipTo(zip, dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform === "linux") execFileSync("unzip", ["-oq", path.resolve(zip), "-d", dir]);
+  else execFileSync(tarBin(), ["-xf", path.resolve(zip), "-C", dir]);
 }
 
 function doPush(cfg) {
   doExport(cfg);
-  git(cfg, "add", "--", scope(cfg));
-  let staged = "";
-  try { staged = git(cfg, "diff", "--cached", "--name-only", "--", scope(cfg)); } catch {}
-  if (!staged) { log("\nNothing to commit."); return; }
-  git(cfg, "commit", "-m", `sync from ${os.hostname()}`, "--", scope(cfg));
-  if (!hasRemote(cfg)) { log("\nCommitted. No git remote configured — add one to push."); return; }
-  log(git(cfg, "push"));
-  log("\nPushed.");
+  if (DRY) return;
+  // Write next to the target and rename, so a crash never leaves half a zip
+  // where the other machine (or a cloud-drive client) will pick it up.
+  const tmp = cfg.zip.replace(/(\.zip)?$/i, ".tmp.zip"); // tar -a needs the .zip suffix
+  try { fs.unlinkSync(tmp); } catch {}
+  fs.mkdirSync(path.dirname(path.resolve(cfg.zip)), { recursive: true });
+  zipDir(cfg.repo, tmp);
+  fs.renameSync(tmp, cfg.zip);
+  log(`\nWrote ${cfg.zip} (${(fs.statSync(cfg.zip).size / 1048576).toFixed(1)}MB)`);
 }
 
 function doPull(cfg) {
-  if (hasRemote(cfg)) log(git(cfg, "pull", "--rebase"));
+  if (fs.existsSync(cfg.zip)) {
+    unzipTo(cfg.zip, cfg.repo);
+    log(`Unpacked ${cfg.zip} -> ${cfg.repo}`);
+  } else {
+    log(`No archive at ${cfg.zip} yet; importing what is already in ${cfg.repo}.`);
+  }
   doImport(cfg);
 }
 
@@ -532,29 +534,17 @@ function doStatus(cfg) {
   Object.assign(stats, { written: 0, same: 0, skipped: [] });
   log("\n=== would import ===");
   doImport(cfg);
-  try { const s = git(cfg, "status", "--short", "--", scope(cfg)); log("\n=== git ===\n" + (s || "clean")); } catch {}
 }
 
 // ---- init ------------------------------------------------------------------
-const GITIGNORE = `# Machine-local, never sync these
-.credentials.json
-sync.config.json
-*.bak-sync
-.DS_Store
-`;
-
-// Transcripts must survive a checkout byte-for-byte, so no eol translation.
-const GITATTRIBUTES = `* -text
-`;
-
 const README = `# claude-data
 
 Synced Claude Code config, skills, memories and sessions.
-Managed by \`node sync.js\` one directory up.
+Managed by \`node sync.js\`, which packs this directory into a zip.
 
 Paths are stored as \`{TOKEN}/...\` and resolved per machine via
-\`~/.claude/sync.config.json\`. **Keep this repo private** — sessions contain
-your full conversation history.
+\`~/.claude/sync.config.json\`. **Never commit or publish this directory or its
+zip** — sessions contain your full conversation history.
 `;
 
 function doInit(argv) {
@@ -564,6 +554,7 @@ function doInit(argv) {
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo" && argv[i + 1]) cfg.repo = path.resolve(argv[++i]);
+    else if (argv[i] === "--zip" && argv[i + 1]) cfg.zip = path.resolve(argv[++i]);
     else if (argv[i] === "--root" && argv[i + 1]) {
       const [tok, ...rest] = argv[++i].split("=");
       cfg.roots[tok.toUpperCase()] = path.resolve(rest.join("="));
@@ -573,26 +564,14 @@ function doInit(argv) {
   if (!cfg.roots.HOME) cfg.roots.HOME = os.homedir();
 
   fs.mkdirSync(cfg.repo, { recursive: true });
-  // A data dir inside an existing checkout rides that repo rather than nesting
-  // a second one, which git would only half-see.
-  const enclosing = gitRoot(cfg);
-  if (!enclosing) {
-    execFileSync("git", ["init", "-q"], { cwd: cfg.repo });
-    log(`git init ${cfg.repo}`);
-  } else {
-    log(`using enclosing repo ${enclosing}`);
-  }
-  for (const [f, body] of [[".gitignore", GITIGNORE], [".gitattributes", GITATTRIBUTES], ["README.md", README]]) {
-    const p = path.join(cfg.repo, f);
-    if (!fs.existsSync(p)) fs.writeFileSync(p, body);
-  }
+  const readme = path.join(cfg.repo, "README.md");
+  if (!fs.existsSync(readme)) fs.writeFileSync(readme, README);
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
 
   log(`\nWrote ${CONFIG_FILE}`);
   for (const [t, p] of Object.entries(cfg.roots)) log(`  {${t}} -> ${p}`);
   log(`\nNext:\n  node sync.js push`);
-  if (!enclosing) log(`  cd ${cfg.repo} && gh repo create claude-data --private --source=. --push`);
-  else log(`  make sure ${enclosing} is private — it will hold your session history`);
+  log(`  then carry ${cfg.zip || cfg.repo + ".zip"} to the other machine (a synced drive folder works) and run: node sync.js pull`);
 }
 
 // ---- cli -------------------------------------------------------------------
